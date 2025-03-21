@@ -1,77 +1,74 @@
-# Import required libraries
 import cv2
-import mediapipe as mp
 import numpy as np
-from tensorflow.keras.models import load_model
+import mediapipe as mp
+import tensorflow as tf
+from sklearn.preprocessing import LabelEncoder
 
-# Load the trained model
-MODEL_PATH = "action_model.h5"
-model = load_model(MODEL_PATH)
+# Load trained model
+model = tf.keras.models.load_model("action_model.h5")
 
-# Define actions and corresponding labels
-ACTIONS = ["kick", "punch", "idle"]
+# Define actions
+actions = ["kick", "punch", "idle"]
+label_encoder = LabelEncoder()
+label_encoder.fit(actions)
 
-# Initialize MediaPipe Pose
+# Initialize Mediapipe Pose solution
 mp_pose = mp.solutions.pose
-pose = mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
 mp_drawing = mp.solutions.drawing_utils
+pose = mp_pose.Pose()
 
-# Define function to extract landmarks from the detected pose
-def extract_landmarks(landmarks):
-    data = []
-    for lm in landmarks.landmark:
-        data.extend([lm.x, lm.y, lm.z])  # Add x, y, z coordinates
-    return np.array(data).reshape(1, 33, 3)
+# Define drawing specifications for landmarks and connections
+landmark_style = mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=2, circle_radius=4)  # Stick figure style
+connection_style = mp_drawing.DrawingSpec(color=(0, 255, 255), thickness=2)
 
-# Initialize webcam
+# Start capturing video from webcam
 cap = cv2.VideoCapture(0)
 
-# Main loop for real-time action detection
+# 💡 Set higher resolution (e.g., 1280x720 or 1920x1080)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)  # Width
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)  # Height
+
 while cap.isOpened():
     ret, frame = cap.read()
     if not ret:
-        print("❌ Unable to access webcam. Exiting...")
         break
 
-    # Flip frame horizontally and convert BGR to RGB
+    # Flip frame for natural view
     frame = cv2.flip(frame, 1)
+
+    # Convert frame to RGB for Mediapipe
     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    results = pose.process(rgb_frame)
 
-    # Process the frame to detect pose landmarks
-    result = pose.process(rgb_frame)
+    # Check if any landmarks are detected
+    if results.pose_landmarks:
+        landmarks = results.pose_landmarks.landmark
 
-    # Check if landmarks are detected
-    if result.pose_landmarks:
-        # Draw landmarks and connections on the frame
-        mp_drawing.draw_landmarks(frame, result.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+        # Flatten and normalize landmark data
+        landmark_data = np.array([[lm.x, lm.y, lm.z] for lm in landmarks]).flatten()
 
-        # Extract landmarks and normalize
-        landmarks = extract_landmarks(result.pose_landmarks)
-        landmarks = landmarks / np.max(landmarks)  # Normalize before prediction
+        # Ensure correct shape before prediction
+        if landmark_data.shape[0] == 99:  # 33 landmarks * 3 (x, y, z)
+            landmark_data = landmark_data.reshape(33, 3)
 
-        # Make prediction using the trained model
-        prediction = model.predict(landmarks)
+            # Add batch dimension and predict
+            prediction = model.predict(np.expand_dims(landmark_data, axis=0))
+            action_index = np.argmax(prediction)
+            predicted_action = label_encoder.inverse_transform([action_index])[0]
 
-        # Get the action with highest confidence
-        action_index = np.argmax(prediction)
-        action_name = ACTIONS[action_index]
-        confidence = prediction[0][action_index]
+            # Display predicted action on the frame
+            cv2.putText(frame, f"Action: {predicted_action}", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
-        # Display the action and confidence on the frame
-        cv2.putText(frame, f"Action: {action_name} ({confidence:.2f})", (10, 40),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-    else:
-        # Show message if no pose is detected
-        cv2.putText(frame, "No action detected", (10, 40),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+        # Draw landmarks and connections with bigger sizes
+        mp_drawing.draw_landmarks(frame, results.pose_landmarks, mp_pose.POSE_CONNECTIONS, landmark_style, connection_style)
 
-    # Display the frame
-    cv2.imshow("Action Detection", frame)
+    # Display frame with action prediction and larger resolution
+    cv2.imshow("Action Detection (High Resolution)", frame)
 
-    # Press 'q' to quit
-    if cv2.waitKey(1) & 0xFF == ord("q"):
+    # Press 'q' to exit
+    if cv2.waitKey(10) & 0xFF == ord("q"):
         break
 
-# Release webcam and close windows
+# Release resources
 cap.release()
 cv2.destroyAllWindows()
