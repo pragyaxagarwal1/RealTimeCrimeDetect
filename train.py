@@ -1,96 +1,99 @@
-# Import required libraries
 import os
+import cv2
 import numpy as np
-import pandas as pd
-import tensorflow as tf
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense
+from tensorflow.keras.layers import Conv2D, MaxPooling2D, Flatten, Dense, Dropout
+from tensorflow.keras.optimizers import Adam
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder
-import glob
+from tensorflow.keras.utils import to_categorical
+from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+import matplotlib.pyplot as plt
 
-# Define action labels
-actions = ["kick", "punch", "idle"]
+# Path to the extracted dataset
+data_dir = r"C:\Users\PRAGYA\Desktop\PROGRAMMING\4th sem\train"
+categories = os.listdir(data_dir)
+img_size = 48  # Target image size
 
-# Initialize empty lists for data and labels
-data = []
-labels = []
+X = []
+y = []
 
-# Check and load multiple CSV files for each action
-for action in actions:
-    # Get all CSV files for each action (e.g., kick_1.csv, punch_1.csv, etc.)
-    file_pattern = f"action_data/{action}_*.csv"
-    csv_files = glob.glob(file_pattern)
+# Load and preprocess images
+for idx, category in enumerate(categories):
+    folder_path = os.path.join(data_dir, category)
+    for img_name in os.listdir(folder_path):
+        img_path = os.path.join(folder_path, img_name)
+        try:
+            img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
+            img = cv2.resize(img, (img_size, img_size))
+            X.append(img)
+            y.append(idx)
+        except Exception as e:
+            print(f"Error processing {img_path}: {e}")
 
-    # Check if any files are found
-    if len(csv_files) == 0:
-        print(f"❌ No files found for action: {action}")
-        continue
+X = np.array(X)
+y = np.array(y)
 
-    # Process each CSV file for the current action
-    for file_path in csv_files:
-        # Read CSV and process data
-        df = pd.read_csv(file_path, header=None)  # No header in the new format
+# Normalize pixel values to range [0, 1]
+X = X.astype('float32') / 255.0
 
-        # Debug: Print file shape
-        print(f"✅ Loaded: {file_path} | Shape: {df.shape}")
+# Add an extra dimension for channels (grayscale images have 1 channel)
+X = np.expand_dims(X, axis=-1)
 
-        # Process each row with error handling for invalid data
-        for i in range(len(df)):
-            row = df.iloc[i].values
+y = to_categorical(y, num_classes=len(categories))
 
-            try:
-                # Convert all values to float
-                landmark_data = np.array(row, dtype=np.float32)
+# Train-test split
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-                # Dynamically reshape the landmark data based on its length
-                num_landmarks = len(landmark_data) // 3
-                if len(landmark_data) % 3 == 0 and num_landmarks == 33:  # Expected 33 landmarks (x, y, z)
-                    landmark_data = landmark_data.reshape(33, 3)
-                    data.append(landmark_data)
-                    labels.append(action)
-                else:
-                    print(f"⚠️ Skipping invalid row in {file_path}: Incorrect landmark data")
+# Model architecture with CNN
+model = Sequential([
+    Conv2D(32, (3, 3), activation='relu', input_shape=(img_size, img_size, 1)),
+    MaxPooling2D(pool_size=(2, 2)),
+    Conv2D(64, (3, 3), activation='relu'),
+    MaxPooling2D(pool_size=(2, 2)),
+    Flatten(),
+    Dense(128, activation='relu'),
+    Dropout(0.5),
+    Dense(len(categories), activation='softmax')
+])
 
-            except ValueError:
-                print(f"❌ Skipping row {i + 1} in {file_path}: Invalid data")
+model.compile(loss='categorical_crossentropy', optimizer=Adam(), metrics=['accuracy'])
 
-# Check if data is loaded properly
-if len(data) == 0 or len(labels) == 0:
-    print("❌ No valid data found. Check your CSV files.")
-    exit()
+# Callbacks
+checkpoint = ModelCheckpoint("best_emotion_model_cnn.h5", monitor='val_accuracy', save_best_only=True, mode='max')
+early_stop = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
 
-# Convert to NumPy arrays
-X = np.array(data, dtype=np.float32)
-y = np.array(labels)
+# Data Augmentation
+datagen = ImageDataGenerator(
+    rotation_range=20,
+    width_shift_range=0.2,
+    height_shift_range=0.2,
+    shear_range=0.2,
+    zoom_range=0.2,
+    horizontal_flip=True,
+    fill_mode='nearest'
+)
 
-# Debug: Check landmark shape before reshaping
-print(f"✅ Initial X shape: {X.shape}")
+datagen.fit(X_train)
 
-# Encode labels to numerical values
-label_encoder = LabelEncoder()
-y_encoded = label_encoder.fit_transform(y)
+# Training
+history = model.fit(
+    datagen.flow(X_train, y_train, batch_size=32),
+    epochs=10,  # Set to 10 epochs
+    validation_data=(X_test, y_test),
+    callbacks=[checkpoint, early_stop]
+)
 
-# Split dataset into training and testing
-X_train, X_test, y_train, y_test = train_test_split(X, y_encoded, test_size=0.2, random_state=42)
+# Save final model
+model.save("emotion_recognition_model_cnn.keras")
+print("Model training complete! Model saved as 'emotion_recognition_model_cnn.keras'.")
 
-# Debug: Print final dataset shapes
-print(f"✅ X_train shape: {X_train.shape}, y_train shape: {y_train.shape}")
-print(f"✅ X_test shape: {X_test.shape}, y_test shape: {y_test.shape}")
-print(f"✅ Unique labels: {set(labels)}")
-
-# Define LSTM-based model
-model = Sequential()
-model.add(LSTM(64, return_sequences=False, input_shape=(33, 3)))
-model.add(Dense(32, activation="relu"))
-model.add(Dense(len(actions), activation="softmax"))
-
-# Compile the model
-model.compile(optimizer="adam", loss="sparse_categorical_crossentropy", metrics=["accuracy"])
-
-# Train the model with reduced epochs and smaller batch size for stability
-history = model.fit(X_train, y_train, epochs=20, validation_split=0.2, batch_size=16)
-
-# Save trained model
-model.save("action_model.h5")
-print("✅ Model trained and saved as action_model.h5!")
+# Plot training history
+plt.plot(history.history['accuracy'], label='Train Accuracy')
+plt.plot(history.history['val_accuracy'], label='Validation Accuracy')
+plt.xlabel('Epochs')
+plt.ylabel('Accuracy')
+plt.title('Model Accuracy Over Epochs')
+plt.legend()
+plt.grid(True)
+plt.show()
